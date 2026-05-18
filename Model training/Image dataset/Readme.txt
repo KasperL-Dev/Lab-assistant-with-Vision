@@ -1,0 +1,1 @@
+Only unannotated images should be placed in this folder.
