@@ -1,30 +1,35 @@
 # Main script for Cobot control.
+import multiprocessing
+multiprocessing.set_start_method("fork")    # avoids macOS spawn reimporting main.py
 
-########## Config ##########
+########### Config
 
-center_tolerance = 20                        # pixels: how close to center counts as "arrived"
-stable_frames    = 5                         # frames dish must be near center before picking
-frame_w, frame_h = 1280, 720                 # camera resolution
-move_delay       = 5                         # seconds to wait after a move command
+center_tolerance = 20                       # pixels: how close to center counts as "arrived"
+stable_frames    = 5                        # frames dish must be near center before picking
+frame_w, frame_h = 1280, 720               # camera resolution
+move_delay       = 3                        # seconds to wait after a move command
 
-########## Imports ##########
+########### Imports
 
 import time
 import threading
 import vision_pos
 import control
 
-########## Shared state ##########
+########### Shared state
 
 latest_detections = []
 target_id         = None
 
-########## Cobot logic ##########
+########### Cobot logic (runs in background thread)
 
 def cobot_thread():
     global target_id
 
     cx, cy = frame_w // 2, frame_h // 2
+
+    control.connect()
+    control.home()
 
     def get_target():
         return next((d for d in latest_detections if d["id"] == target_id), None)
@@ -82,8 +87,8 @@ def cobot_thread():
                 break
         else:
             centered_count = 0
-            dx_mm = (target["x"] - cx) / px_per_mm_x
-            dy_mm = (target["y"] - cy) / px_per_mm_y
+            dy_mm = (target["x"] - cx) / px_per_mm_x
+            dx_mm = (target["y"] - cy) / px_per_mm_y
             control.move(dx=dx_mm, dy=dy_mm)
             time.sleep(move_delay)
 
@@ -91,17 +96,17 @@ def cobot_thread():
     vision_pos.robot_status = "PICKING"
     vision_pos.target_id    = None
     control.command("pick")
+    time.sleep(1)
 
     # ── Step 5: place ─────────────────────────────────────────────────────────
     vision_pos.robot_status = "PLACING"
     print(f"Placing at {control.place_position}...")
-    control.cob.sendCobotPos(control.place_position, control.speed)
-    control.cob.O_out(control.suction_DO, 0)    # suction off
+    control.command("place")
 
     vision_pos.robot_status = "IDLE"
     print("Done. Press q in the camera window to exit.")
 
-########## Vision ##########
+########### Main (vision runs here, on the main thread)
 
 # Start cobot logic in background
 t = threading.Thread(target=cobot_thread, daemon=True)
