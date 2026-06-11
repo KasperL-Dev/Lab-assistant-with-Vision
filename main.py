@@ -8,12 +8,15 @@ center_tolerance = 20                       # pixels: how close to center counts
 stable_frames    = 5                        # frames dish must be near center before picking
 frame_w, frame_h = 1280, 720               # camera resolution
 move_delay       = 3                        # seconds to wait after a move command
+px_per_mm_x      = 1.9
+px_per_mm_y      = 1.9
 
 ########### Imports
 
 import time
 import threading
 import vision_pos
+import vision_class
 import control
 
 ########### Shared state
@@ -37,21 +40,6 @@ def cobot_thread():
     def is_centered(det):
         dist = ((det["x"] - cx) ** 2 + (det["y"] - cy) ** 2) ** 0.5
         return dist < center_tolerance
-
-    # ── Calibration ───────────────────────────────────────────────────────────
-    cal = control.load_calibration()
-    if cal is None:
-        ans = input("No calibration found. Run calibration now? (y/n): ")
-        if ans.lower() == "y":
-            cal = control.calibrate(
-                get_detections=lambda: latest_detections,
-                move_delay=move_delay
-            )
-        else:
-            print("Using fallback pixels_per_mm = 2.0 for both axes.")
-            cal = (2.0, 2.0)
-
-    px_per_mm_x, px_per_mm_y = cal
 
     # ── Step 1: wait for stable detections ───────────────────────────────────
     print("Waiting for dishes to appear...")
@@ -92,6 +80,24 @@ def cobot_thread():
             control.move(dx=dx_mm, dy=dy_mm)
             time.sleep(move_delay)
 
+    # ── Step 3.5: classify the dish ───────────────────────────────────────────
+    control.command("focus")
+    vision_pos.robot_status = "CLASSIFYING"
+    frame = vision_pos.latest_frame
+
+    if frame is not None:
+        color, confidence = vision_class.classify_frame(frame)
+        print(f"\n┌─ Classification result ──────────────────")
+        print(f"│  Colour    : {color}")
+        print(f"│  Confidence: {confidence * 100:.1f}%")
+        print(f"└──────────────────────────────────────────\n")
+    else:
+        color = "leeg"
+        print("Warning: no camera frame available for classification, defaulting to 'leeg'.")
+
+    place_pos = control.place_positions.get(color, control.place_positions["leeg"])
+    print(f"Place position: {place_pos}")
+
     # ── Step 4: pick ──────────────────────────────────────────────────────────
     vision_pos.robot_status = "PICKING"
     vision_pos.target_id    = None
@@ -100,8 +106,8 @@ def cobot_thread():
 
     # ── Step 5: place ─────────────────────────────────────────────────────────
     vision_pos.robot_status = "PLACING"
-    print(f"Placing at {control.place_position}...")
-    control.command("place")
+    print(f"Placing '{color}' dish at {place_pos}...")
+    control.command("place", place_pos=place_pos)
 
     vision_pos.robot_status = "IDLE"
     print("Done. Press q in the camera window to exit.")

@@ -22,12 +22,14 @@ last_time     = time.time()
 fps           = 0.0
 target_id     = None    # set from main.py to highlight the target dish
 robot_status  = "IDLE"  # set from main.py to show robot state in overlay
+latest_frame  = None    # most recent clean (pre-annotation) frame; read by vision_class
 
 overlay_items = [
     { "label": "FPS",    "value": lambda: f"{fps:.1f}",    "color": (0, 255, 0)   },
     { "label": "Robot",  "value": lambda: robot_status,    "color": (0, 255, 255) },
     # ← add more items here, see instructions above
 ]
+
 ########## Module ##########
 def find_or_create(class_name, x, y):
     global next_id
@@ -65,7 +67,6 @@ def draw_overlay(frame):
         color = item.get("color", (255, 255, 255))
 
         (tw, th), baseline = cv2.getTextSize(text, font, font_scale, thickness)
-        # Dark background for readability
         cv2.rectangle(frame,
                       (x_start - 2, y_start - 2),
                       (x_start + tw + padding, y_start + th + padding),
@@ -73,7 +74,7 @@ def draw_overlay(frame):
         cv2.putText(frame, text,
                     (x_start + padding // 2, y_start + th),
                     font, font_scale, color, thickness, cv2.LINE_AA)
-        y_start += th + padding + 4   # move down for next item
+        y_start += th + padding + 4
 
 def draw_crosshair(frame, x, y, size=20, color=(0, 255, 255), thickness=1):
     """Draw a crosshair at (x, y)."""
@@ -85,10 +86,8 @@ def draw_annotations(frame, result, detections):
     h, w = frame.shape[:2]
     cx, cy = w // 2, h // 2
 
-    # --- Camera center crosshair ---
     draw_crosshair(frame, cx, cy, size=24, color=(0, 255, 255), thickness=1)
 
-    # --- Per-detection annotations ---
     for box, det in zip(result.boxes, detections):
         x1, y1, x2, y2 = (int(float(v)) for v in box.xyxy[0])
         conf            = float(box.conf[0])
@@ -96,27 +95,23 @@ def draw_annotations(frame, result, detections):
         dx, dy          = det["x"], det["y"]
         obj_id          = det["id"]
 
-        # Bounding box
         cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 200, 0), 2)
-
-        # Center dot
         cv2.circle(frame, (int(dx), int(dy)), 5, (0, 0, 255), -1)
 
-        # Label
         label = f"ID:{obj_id} {class_name} {conf:.2f}"
         (tw, th), baseline = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 1)
         label_y = max(y1 - 6, th + 4)
         cv2.rectangle(frame, (x1, label_y - th - 4), (x1 + tw + 4, label_y + baseline), (0, 200, 0), -1)
         cv2.putText(frame, label, (x1 + 2, label_y - 2), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 0), 1, cv2.LINE_AA)
 
-        # Line from camera center to target dish
         if obj_id == target_id:
             cv2.line(frame, (cx, cy), (int(dx), int(dy)), (0, 100, 255), 2)
 
     return frame
 
 def run():
-    global tracked
+    global tracked, last_time, fps, latest_frame
+
     for result in model(source=source, show=False, conf=confidence, stream=True, verbose=False):
         # Mark all objects as missing
         for obj in tracked.values():
@@ -136,13 +131,15 @@ def run():
             del tracked[obj_id]
 
         # Update FPS
-        global last_time, fps
         now       = time.time()
         fps       = 1.0 / (now - last_time) if (now - last_time) > 0 else 0.0
         last_time = now
 
-        # Draw custom annotations and show frame
-        frame = result.orig_img.copy()
+        # Store clean frame for classification before drawing annotations on it
+        latest_frame = result.orig_img.copy()
+
+        # Draw annotations and show
+        frame = latest_frame.copy()
         frame = draw_annotations(frame, result, detections)
         draw_overlay(frame)
         cv2.imshow("Vision", frame)
@@ -155,10 +152,8 @@ def run():
 
 ########## Main ##########
 if __name__ == "__main__":
-    # Ask to list available camera id's.
     list_cam = input("Do you want to list available camera's? (y/n) ")
 
-    # List available camera id's.
     if list_cam == "y":
         for i in range(10):
             cap = cv2.VideoCapture(i)
@@ -166,10 +161,8 @@ if __name__ == "__main__":
                 print(f"Camera {i}: available")
             cap.release()
 
-    # Override source from config if desired.
     source = int(input(f"Select a camera (current: {source}): ") or source)
 
-    # Prediction.
     for detections in run():
         for d in detections:
             print(f"ID {d['id']}  x={d['x']:.0f}  y={d['y']:.0f}")
