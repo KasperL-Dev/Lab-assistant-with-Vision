@@ -4,14 +4,15 @@
 ########### Config
 
 cobot_ip         = "192.168.0.1"
-speed            = 80
-pick_dip         = 50                       # mm to lower for a pick operation
-focus_dip        = 210
-focus_offset     = 120
+speed            = 100
+pick_dip         = 100                       # mm to lower for a pick operation
+focus_dip        = 260
+camera_offset_x  = 170
+camera_offset_y  = 30
 suction_DO       = 7                         # digital output number for suction
 mock             = False                     # Set True when not connected to the real cobot
 calibration_dist = 50                        # mm the robot moves during calibration
-home_position    = "650,-150,300,180,0,90"   # home/calibration height
+home_position    = "500,0,400,180,0,90"   # home/calibration height
 
 # Place positions per dish colour (Dutch names matching vision_class.py class_names).
 # ↓ Adjust x,y,z coordinates for each colour to match your physical tray layout.
@@ -116,6 +117,7 @@ def connect():
 def home():
     """Move robot to home position."""
     _send("sendPos", (home_position, speed))
+    time.sleep(10)
 
 def move(dx=0, dy=0, dz=0):
     """Move relative to current position. All values in mm."""
@@ -134,23 +136,23 @@ def command(cmd, place_pos=None):
       "place" – move to place_pos (or 'leeg' fallback), turn suction off, return home
     """
     if cmd == "pick":
-        move(dx=+focus_offset+20)
+        move(dx=+camera_offset_x)
+        time.sleep(5)
+        move(dy=-camera_offset_y)
         time.sleep(2)
         move(dz=-pick_dip)
         _send("O_out", (suction_DO, False))     # suction on
-        time.sleep(2)
+        time.sleep(5)
         move(dz=+pick_dip)
     
     elif cmd == "focus":
         move(dz=-focus_dip)
-        time.sleep(3)
-        move(dx=-focus_offset)
-        time.sleep(3)
+        time.sleep(5)
 
     elif cmd == "place":
         pos = place_pos if place_pos is not None else place_positions["leeg"]
         _send("sendPos", (pos, speed))
-        time.sleep(15)                           # wait for robot to fully arrive
+        time.sleep(12)                           # wait for robot to fully arrive
         _send("O_out", (suction_DO, True))      # suction off
         _send("sendPos", (home_position, speed))
     else:

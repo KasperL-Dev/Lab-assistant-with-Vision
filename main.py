@@ -33,6 +33,9 @@ def cobot_thread():
 
     control.connect()
     control.home()
+    
+    # Track whether the user has enabled automatic sorting
+    auto_mode = False
 
     def get_target():
         return next((d for d in latest_detections if d["id"] == target_id), None)
@@ -41,82 +44,109 @@ def cobot_thread():
         dist = ((det["x"] - cx) ** 2 + (det["y"] - cy) ** 2) ** 0.5
         return dist < center_tolerance
 
-    # ── Step 1: wait for stable detections ───────────────────────────────────
-    print("Waiting for dishes to appear...")
-    vision_pos.robot_status = "SCANNING"
-    while not latest_detections:
-        time.sleep(0.1)
-    time.sleep(1)   # let tracker stabilise
-
-    # ── Step 2: ask user which dish to pick ──────────────────────────────────
-    print("\nFound dishes:")
-    for d in latest_detections:
-        print(f"  ID {d['id']}  x={d['x']:.0f}  y={d['y']:.0f}")
-
-    target_id               = int(input("Enter ID to pick: "))
-    vision_pos.target_id    = target_id
-    vision_pos.robot_status = "MOVING"
-
-    # ── Step 3: move to dish, retry until centered ────────────────────────────
-    centered_count = 0
+    # Infinite loop to keep sorting dishes
     while True:
-        time.sleep(0.1)
-        target = get_target()
+        # Home the robot at the start of the loop to clear the camera view
+        control.home()
+        vision_pos.robot_status = "IDLE"
 
-        if target is None:
-            print("Target not visible, waiting...")
-            centered_count = 0
-            continue
+        # ── Step 1: wait for stable detections ───────────────────────────────────
+        print("\nWaiting for dishes to appear...")
+        vision_pos.robot_status = "SCANNING"
+        while not latest_detections:
+            time.sleep(0.1)
+        time.sleep(1)   # let tracker stabilise
 
-        if is_centered(target):
-            centered_count += 1
-            print(f"On target ({centered_count}/{stable_frames})...")
-            if centered_count >= stable_frames:
-                break
+        # ── Step 2: choose which dish to pick ──────────────────────────────────
+        print("\nFound dishes:")
+        for d in latest_detections:
+            print(f"  ID {d['id']}  x={d['x']:.0f}  y={d['y']:.0f}")
+
+        if not auto_mode:
+            user_input = input("Enter ID to pick (or 'auto'): ").strip().lower()
+            if user_input == 'auto':
+                auto_mode = True
+            else:
+                try:
+                    target_id = int(user_input)
+                except ValueError:
+                    print("Invalid input. Please enter a valid ID or 'auto'.")
+                    continue
+        
+        if auto_mode:
+            # Calculate squared distance to the center (cx, cy) for all detections
+            # and return the dish with the minimum distance.
+            closest_dish = min(
+                latest_detections, 
+                key=lambda d: (d["x"] - cx)**2 + (d["y"] - cy)**2
+            )
+            target_id = closest_dish["id"]
+            print(f"\n[Auto Mode] Selected closest dish ID: {target_id}")
+
+        vision_pos.target_id    = target_id
+        vision_pos.robot_status = "MOVING"
+
+        # ── Step 3: move to dish, retry until centered ────────────────────────────
+        centered_count = 0
+        while True:
+            time.sleep(0.1)
+            target = get_target()
+
+            if target is None:
+                print("Target not visible, waiting...")
+                centered_count = 0
+                continue
+
+            if is_centered(target):
+                centered_count += 1
+                print(f"On target ({centered_count}/{stable_frames})...")
+                if centered_count >= stable_frames:
+                    break
+            else:
+                centered_count = 0
+                dy_mm = (target["x"] - cx) / px_per_mm_x
+                dx_mm = (target["y"] - cy) / px_per_mm_y
+                control.move(dx=dx_mm, dy=dy_mm)
+                time.sleep(move_delay)
+
+        # ── Step 3.5: classify the dish ───────────────────────────────────────────
+        control.command("focus")
+        vision_pos.robot_status = "CLASSIFYING"
+        frame = vision_pos.latest_frame
+
+        if frame is not None:
+            color, confidence = vision_class.classify_frame(frame)
+            print(f"\n┌─ Classification result ──────────────────")
+            print(f"│  Colour    : {color}")
+            print(f"│  Confidence: {confidence * 100:.1f}%")
+            print(f"└──────────────────────────────────────────\n")
         else:
-            centered_count = 0
-            dy_mm = (target["x"] - cx) / px_per_mm_x
-            dx_mm = (target["y"] - cy) / px_per_mm_y
-            control.move(dx=dx_mm, dy=dy_mm)
-            time.sleep(move_delay)
+            color = "leeg"
+            print("Warning: no camera frame available for classification, defaulting to 'leeg'.")
 
-    # ── Step 3.5: classify the dish ───────────────────────────────────────────
-    control.command("focus")
-    vision_pos.robot_status = "CLASSIFYING"
-    frame = vision_pos.latest_frame
+        place_pos = control.place_positions.get(color, control.place_positions["leeg"])
+        print(f"Place position: {place_pos}")
 
-    if frame is not None:
-        color, confidence = vision_class.classify_frame(frame)
-        print(f"\n┌─ Classification result ──────────────────")
-        print(f"│  Colour    : {color}")
-        print(f"│  Confidence: {confidence * 100:.1f}%")
-        print(f"└──────────────────────────────────────────\n")
-    else:
-        color = "leeg"
-        print("Warning: no camera frame available for classification, defaulting to 'leeg'.")
+        # ── Step 4: pick ──────────────────────────────────────────────────────────
+        vision_pos.robot_status = "PICKING"
+        vision_pos.target_id    = None
+        control.command("pick")
+        time.sleep(1)
 
-    place_pos = control.place_positions.get(color, control.place_positions["leeg"])
-    print(f"Place position: {place_pos}")
-
-    # ── Step 4: pick ──────────────────────────────────────────────────────────
-    vision_pos.robot_status = "PICKING"
-    vision_pos.target_id    = None
-    control.command("pick")
-    time.sleep(1)
-
-    # ── Step 5: place ─────────────────────────────────────────────────────────
-    vision_pos.robot_status = "PLACING"
-    print(f"Placing '{color}' dish at {place_pos}...")
-    control.command("place", place_pos=place_pos)
-
-    vision_pos.robot_status = "IDLE"
-    print("Done. Press q in the camera window to exit.")
+        # ── Step 5: place ─────────────────────────────────────────────────────────
+        vision_pos.robot_status = "PLACING"
+        print(f"Placing '{color}' dish at {place_pos}...")
+        control.command("place", place_pos=place_pos)
+        
+        print("\nDish sorted! Starting next cycle...")
 
 ########### Main (vision runs here, on the main thread)
 
 # Start cobot logic in background
 t = threading.Thread(target=cobot_thread, daemon=True)
 t.start()
+
+print("Press 'q' in the camera window to exit.")
 
 # Vision loop runs on main thread (required on macOS)
 for detections in vision_pos.run():
