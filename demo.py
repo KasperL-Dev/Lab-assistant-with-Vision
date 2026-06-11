@@ -9,6 +9,11 @@ import threading
 import vision_pos
 import control
 
+########### Config
+
+px_per_mm_x      = 1.9
+px_per_mm_y      = 1.9
+
 ########### Shared state
 
 latest_detections = []
@@ -20,12 +25,6 @@ def demo_thread():
 
     control.connect()
     control.home()
-
-    cal = control.load_calibration()
-    if cal is None:
-        print("No calibration found, using fallback 2.0 px/mm.")
-        cal = (2.0, 2.0)
-    px_per_mm_x, px_per_mm_y = cal
 
     print("Waiting for dishes...")
     vision_pos.robot_status = "SCANNING"

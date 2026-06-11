@@ -11,7 +11,7 @@ import time
 ########## Config ##########
 model      = YOLO("models/petri_v2n.pt")    # Path to prediction model.
 source     = 0                              # Camera index or video path
-confidence = 0.8                            # Filter detections below 0.8
+confidence = 0.6                            # Filter detections below 0.8
 radius     = 80                             # Maximum difference between locations to keep same id
 memory     = 10                             # Amount of frames to wait before dropping id
 
